@@ -78,9 +78,12 @@ def get_video_duration(video_id):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info_dict = ydl.extract_info(video_url, download=False)
-            duration = info_dict.get('duration', 0)  # seconds में
-            return duration
-        except:
+            if info_dict:
+                duration = info_dict.get('duration', 0)  # seconds में
+                return duration
+            return 0
+        except Exception as e:
+            print(f"Duration check error for {video_id}: {e}")
             return 0
 
 def download_video(video_id, progress_callback=None):
@@ -492,6 +495,17 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check video duration first
     duration_seconds = get_video_duration(video_id)
     max_duration_seconds = MAX_VIDEO_DURATION_HOURS * 3600
+
+    if duration_seconds == 0:
+        await update.message.reply_text(
+            f"❌ Video की जानकारी नहीं मिल सकी!\n\n"
+            f"🔍 Possible reasons:\n"
+            f"• Video private या deleted हो सकती है\n"
+            f"• URL गलत हो सकता है\n"
+            f"• Network issue हो सकता है\n\n"
+            f"कृपया valid YouTube URL भेजें।"
+        )
+        return
 
     if duration_seconds > max_duration_seconds:
         await update.message.reply_text(

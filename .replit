@@ -18,7 +18,7 @@ args = "telegram_bot_workflow"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Telegram Bot"
+args = "YouTube PDF Bot"
 
 [[workflows.workflow]]
 name = "telegram_bot_workflow"
@@ -29,7 +29,7 @@ task = "shell.exec"
 args = "pip install -r pyproject.toml && python run.py"
 
 [[workflows.workflow]]
-name = "Telegram Bot"
+name = "YouTube PDF Bot"
 author = "agent"
 
 [[workflows.workflow.tasks]]
