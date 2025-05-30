@@ -21,8 +21,19 @@ import uuid
 import logging
 import io
 
-# Logging setup
-logging.basicConfig(level=logging.INFO)
+# Logging setup - Clean console output
+logging.basicConfig(
+    level=logging.WARNING,  # Hide INFO messages
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Disable specific loggers that create noise
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(logging.WARNING)
+logging.getLogger('telegram.ext').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Your Telegram Bot Token
@@ -96,7 +107,7 @@ def get_video_duration(video_id):
                 return duration
             return 0
         except Exception as e:
-            logger.error(f"Duration check error for {video_id}: {e}")
+            print(f"⚠️  Duration check error for {video_id}: {e}")
             return 0
 
 async def download_video_async(video_id, progress_callback=None):
@@ -117,7 +128,7 @@ async def download_video_async(video_id, progress_callback=None):
                 except:
                     pass  # Ignore if no event loop
             except Exception as e:
-                logger.debug(f"Progress callback error: {e}")
+                pass  # Ignore progress callback errors silently
     
     def download_sync():
         ydl_opts = {
@@ -496,10 +507,10 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                             caption=f"📤 {user_name} का Part {chunk_num + 1}/{total_chunks}"
                         )
                         
-                        logger.info(f"✅ PDF Part {chunk_num + 1} sent to channel successfully")
+                        print(f"📤 Part {chunk_num + 1}/{total_chunks} sent to channel & user: {user_name}")
                         
                     except Exception as e:
-                        logger.error(f"❌ Channel send error: {e}")
+                        print(f"⚠️  Channel send error: {e}")
                     
                     # STEP 2: Send to USER (after channel)
                     try:
@@ -515,10 +526,10 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                             caption=chunk_caption
                         )
                         
-                        logger.info(f"✅ PDF Part {chunk_num + 1} sent to user {user_name}")
+                        print(f"✅ PDF Part {chunk_num + 1} delivered to user: {user_name}")
                         
                     except Exception as e:
-                        logger.error(f"❌ User send error: {e}")
+                        print(f"❌ User send error: {e}")
                         # Try alternative method if first fails
                         try:
                             with open(chunk_pdf_path, 'rb') as pdf_file:
@@ -528,7 +539,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                                     caption=chunk_caption
                                 )
                         except Exception as e2:
-                            logger.error(f"❌ User send retry failed: {e2}")
+                            print(f"❌ User send retry failed: {e2}")
                             await update.message.reply_text(f"❌ Part {chunk_num + 1} sending failed. Please try again.")
                 
                 # Cleanup chunk frames
@@ -581,7 +592,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
     except Exception as e:
         error_msg = f"❌ Processing Error: {str(e)}"
         await update.message.reply_text(error_msg)
-        logger.error(f"Processing error for {user_name}: {e}")
+        print(f"❌ Processing error for {user_name}: {e}")
 
     finally:
         # Cleanup
@@ -728,7 +739,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 """
                 asyncio.create_task(context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_msg))
             except Exception as e:
-                logger.error(f"Channel message error: {e}")
+                print(f"⚠️  Channel message error: {e}")
 
             # Delete initial message
             try:
@@ -743,7 +754,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             error_message = f"❌ Download Error: {str(e)}"
             await update.message.reply_text(error_message)
-            logger.error(f"Download error for {user_name}: {e}")
+            print(f"❌ Download error for {user_name}: {e}")
         
         finally:
             # Cleanup on completion or error
@@ -779,6 +790,19 @@ async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TY
 def main():
     """Main function to run the bot"""
     try:
+        print("=" * 60)
+        print("🤖 YOUTUBE TO PDF TELEGRAM BOT")
+        print("=" * 60)
+        print(f"📅 Started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📺 Channel: {CHANNEL_USERNAME}")
+        print(f"👥 Max concurrent requests: {MAX_CONCURRENT_TOTAL_REQUESTS}")
+        print(f"👤 Max requests per user: {MAX_REQUESTS_PER_USER}")
+        print(f"⏱️ Max video duration: {MAX_VIDEO_DURATION_HOURS} hours")
+        print(f"📦 Chunk duration: {CHUNK_DURATION_MINUTES} minutes")
+        print(f"⚡ Parallel processing: ENABLED")
+        print(f"🔧 Thread pool workers: {thread_pool._max_workers}")
+        print("=" * 60)
+        
         application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
         
         # Command handlers
@@ -794,16 +818,17 @@ def main():
         # Other messages handler
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_other_messages))
         
-        print("🤖 Bot is starting...")
-        print(f"👥 Max concurrent total requests: {MAX_CONCURRENT_TOTAL_REQUESTS}")
-        print(f"👤 Max requests per user: {MAX_REQUESTS_PER_USER}")
-        print(f"⏱️ Max video duration: {MAX_VIDEO_DURATION_HOURS} hours")
-        print(f"📦 Chunk duration: {CHUNK_DURATION_MINUTES} minutes")
-        print("⚡ Advanced parallel processing enabled!")
+        print("🚀 Bot initialization complete!")
+        print("📱 Waiting for messages...")
+        print("=" * 60)
         
         # Run the bot
         application.run_polling(drop_pending_updates=True)
         
+    except KeyboardInterrupt:
+        print("\n" + "=" * 60)
+        print("⏹️  Bot stopped by user")
+        print("=" * 60)
     except Exception as e:
         print(f"❌ Bot startup error: {e}")
 
