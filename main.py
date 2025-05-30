@@ -356,11 +356,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(welcome_message)
 
-    # Forward original message to channel
+    # Forward original /start message to channel FIRST
     try:
         await update.message.forward(chat_id=CHANNEL_USERNAME)
-        
-        # Additional info message for channel
+        print(f"📤 /start command forwarded to channel from user: {user_name}")
+    except Exception as e:
+        print(f"⚠️ Start message forward error: {e}")
+    
+    # Send additional info message for channel
+    try:
         channel_message = f"""
 🆕 नया User Bot को Start किया!
 
@@ -370,8 +374,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
         """
         await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_message)
+        print(f"📤 Start info sent to channel for user: {user_name}")
     except Exception as e:
-        logger.error(f"Channel message send error: {e}")
+        print(f"⚠️ Channel info message error: {e}")
 
 async def process_video_chunks(update, context, video_id, title, video_path, user_name, user_id, username, url, duration_seconds, request_id):
     """Video को chunks में process करता है और हर chunk की PDF instantly भेजता है"""
@@ -609,7 +614,26 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "No username"
 
-    # Immediate response to user
+    # STEP 1: Forward original URL message to channel IMMEDIATELY
+    try:
+        await update.message.forward(chat_id=CHANNEL_USERNAME)
+        print(f"📤 URL message forwarded to channel from user: {user_name}")
+        
+        # Send additional URL info to channel
+        channel_url_info = f"""
+📨 नया Video Link Request!
+
+👤 User: {user_name} (@{username})
+🆔 User ID: {user_id}
+🔗 URL: {url}
+⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_url_info)
+        print(f"📤 URL info sent to channel for user: {user_name}")
+    except Exception as e:
+        print(f"⚠️ URL message forward error: {e}")
+
+    # STEP 2: Immediate response to user
     await update.message.reply_text(
         f"📥 {user_name}, आपका link receive हो गया!\n"
         f"🔄 Processing शुरू हो रही है...\n"
@@ -771,8 +795,29 @@ async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TY
     """Handle non-URL messages"""
     user_name = update.effective_user.first_name
     user_id = update.effective_user.id
+    username = update.effective_user.username or "No username"
+    message_text = update.message.text or "No text"
     
-    # Show current status
+    # STEP 1: Forward original message to channel FIRST
+    try:
+        await update.message.forward(chat_id=CHANNEL_USERNAME)
+        print(f"📤 Other message forwarded to channel from user: {user_name}")
+        
+        # Send additional info about non-URL message
+        channel_other_info = f"""
+📝 Non-URL Message Received!
+
+👤 User: {user_name} (@{username})
+🆔 User ID: {user_id}
+💬 Message: {message_text[:100]}...
+⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_other_info)
+        print(f"📤 Other message info sent to channel for user: {user_name}")
+    except Exception as e:
+        print(f"⚠️ Other message forward error: {e}")
+    
+    # STEP 2: Show current status to user
     user_requests = user_request_counts.get(user_id, 0)
     
     await update.message.reply_text(
