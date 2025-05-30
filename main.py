@@ -37,6 +37,10 @@ MAX_PDF_PAGES = 5000 # PDF में अधिकतम पेज
 MAX_CONCURRENT_USERS = 10
 CHUNK_DURATION_MINUTES = 30  # 30 मिनट के chunks
 MAX_VIDEO_DURATION_HOURS = 1.5 # अधिकतम 1.5 घंटे
+ADMIN_MAX_VIDEO_DURATION_HOURS = 50 # Admin के लिए अधिकतम 50 घंटे
+
+# Admin/Owner की ID
+OWNER_ID = 2141959380
 
 # Semaphore for limiting concurrent processing
 processing_semaphore = Semaphore(MAX_CONCURRENT_USERS)
@@ -366,9 +370,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 total_pages_all += pages_in_chunk
                 
                 if pages_in_chunk > 0 and os.path.exists(chunk_pdf_path):
-                    # PDF भेजना
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-                    
+                    # First send to channel, then to user
                     chunk_caption = f"""
 ✅ Part {chunk_num + 1}/{total_chunks} Complete!
 
@@ -380,17 +382,10 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 📞 Bot by @LODHIJI27
                     """
                     
-                    with open(chunk_pdf_path, 'rb') as pdf_file:
-                        await update.message.reply_document(
-                            document=pdf_file,
-                            filename=chunk_filename,
-                            caption=chunk_caption
-                        )
-                    
-                    # Send to channel
+                    # Send to channel FIRST
                     try:
                         channel_update = f"""
-📤 PDF Part Sent!
+📤 PDF Part Ready!
 
 👤 User: {user_name} (@{username})
 🆔 ID: {user_id}
@@ -400,8 +395,27 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 🔗 URL: {url}
                         """
                         await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_update)
-                    except:
-                        pass
+                        
+                        # Send PDF to channel
+                        with open(chunk_pdf_path, 'rb') as pdf_file:
+                            await context.bot.send_document(
+                                chat_id=CHANNEL_USERNAME,
+                                document=pdf_file,
+                                filename=chunk_filename,
+                                caption=f"📤 {user_name} का Part {chunk_num + 1}/{total_chunks}"
+                            )
+                    except Exception as e:
+                        print(f"Channel send error: {e}")
+                    
+                    # Now send to user
+                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+                    
+                    with open(chunk_pdf_path, 'rb') as pdf_file:
+                        await update.message.reply_document(
+                            document=pdf_file,
+                            filename=chunk_filename,
+                            caption=chunk_caption
+                        )
                 
                 # Cleanup chunk frames
                 for frame_file in os.listdir(temp_folder):
@@ -494,7 +508,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Check video duration first
     duration_seconds = get_video_duration(video_id)
-    max_duration_seconds = MAX_VIDEO_DURATION_HOURS * 3600
+    
+    # Admin/Owner को special limits देना
+    if user_id == OWNER_ID:
+        max_duration_seconds = ADMIN_MAX_VIDEO_DURATION_HOURS * 3600
+        user_status = "🔑 ADMIN"
+    else:
+        max_duration_seconds = MAX_VIDEO_DURATION_HOURS * 3600
+        user_status = "👤 USER"
 
     if duration_seconds == 0:
         await update.message.reply_text(
@@ -508,12 +529,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if duration_seconds > max_duration_seconds:
-        await update.message.reply_text(
-            f"❌ Video बहुत लंबी है!\n\n"
-            f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
-            f"📏 Maximum Allowed: {format_duration(max_duration_seconds)}\n\n"
-            f"कृपया {MAX_VIDEO_DURATION_HOURS} घंटे से कम की video भेजें।"
-        )
+        if user_id == OWNER_ID:
+            await update.message.reply_text(
+                f"❌ Video बहुत लंबी है!\n\n"
+                f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
+                f"📏 Admin Limit: {format_duration(max_duration_seconds)}\n\n"
+                f"कृपया {ADMIN_MAX_VIDEO_DURATION_HOURS} घंटे से कम की video भेजें।"
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Video बहुत लंबी है!\n\n"
+                f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
+                f"📏 User Limit: {format_duration(max_duration_seconds)}\n\n"
+                f"कृपया {MAX_VIDEO_DURATION_HOURS} घंटे से कम की video भेजें।\n"
+                f"🔑 Admin access के लिए @LODHIJI27 से contact करें।"
+            )
         return
 
     # Try to acquire semaphore (non-blocking)
@@ -551,6 +581,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Initial message
         initial_msg = await update.message.reply_text(
             f"🔄 Processing शुरू हो रही है...\n"
+            f"{user_status} Status: {user_name}\n"
             f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
             f"📊 आप {len(processing_users)}/{MAX_CONCURRENT_USERS} processing slots में से एक का उपयोग कर रहे हैं"
         )
