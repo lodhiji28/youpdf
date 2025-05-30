@@ -1,4 +1,3 @@
-
 import cv2
 import os
 import tempfile
@@ -18,8 +17,8 @@ from threading import Semaphore
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
-# Your Telegram Bot Token - Get from environment variable with fallback
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7960013115:AAEocB5fZ6jxLZVIcWwMVd5bJd-oQNqdEfA')
+# Your Telegram Bot Token
+TELEGRAM_TOKEN = '7960013115:AAEocB5fZ6jxLZVIcWwMVd5bJd-oQNqdEfA'
 
 # Channel की settings
 CHANNEL_USERNAME = '@alluserpdf'  # आपका channel username
@@ -198,7 +197,7 @@ def convert_frames_to_pdf_chunk(input_folder, output_file, timestamps, chunk_num
     frame_files = sorted(frame_files, key=lambda x: int(x.split('_')[1].split('frame')[-1]))
     
     pdf = FPDF("L")
-    pdf.set_auto_page_break(0)
+    pdf.set_auto_page_break(False)
 
     total_pages = 0
 
@@ -447,256 +446,220 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
             pass
 
     except Exception as e:
-        error_msg = f"❌ Error during processing: {str(e)}"
+        error_msg = f"❌ Processing Error: {str(e)}"
         await update.message.reply_text(error_msg)
-        print(f"Chunk processing error: {e}")
+        print(f"Processing error for {user_name}: {e}")
 
     finally:
-        # Clean up video file
+        # Cleanup
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)
         except:
             pass
-
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """YouTube URL handle करता है"""
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
-    username = update.effective_user.username or "No username"
-    url = update.message.text.strip()
-    
-    # Check if user is already processing
-    if user_id in processing_users:
-        await update.message.reply_text(
-            f"⚠️ {user_name}, आपकी एक video पहले से ही process हो रही है!\n"
-            f"कृपया पहली video का processing complete होने का इंतजार करें।"
-        )
-        return
-    
-    # YouTube URL validation
-    if not re.search(r'(youtube\.com|youtu\.be)', url):
-        await update.message.reply_text(
-            "❌ कृपया valid YouTube link भेजें!\n\n"
-            "Example:\n"
-            "https://www.youtube.com/watch?v=VIDEO_ID\n"
-            "https://youtu.be/VIDEO_ID"
-        )
-        return
-    
-    # Extract video ID
-    video_id = get_video_id(url)
-    if not video_id:
-        await update.message.reply_text("❌ YouTube video ID extract नहीं हो सका!")
-        return
-    
-    # Check video duration first
-    duration_seconds = get_video_duration(video_id)
-    max_duration_seconds = MAX_VIDEO_DURATION_HOURS * 3600
-    
-    if duration_seconds == 0:
-        await update.message.reply_text("❌ Video की information प्राप्त नहीं हो सकी!")
-        return
-    
-    if duration_seconds > max_duration_seconds:
-        await update.message.reply_text(
-            f"❌ Video बहुत लंबी है!\n\n"
-            f"📏 Video Duration: {format_duration(duration_seconds)}\n"
-            f"🚫 Maximum Allowed: {format_duration(max_duration_seconds)}\n\n"
-            f"कृपया {MAX_VIDEO_DURATION_HOURS} घंटे से कम की video भेजें।"
-        )
-        return
-    
-    # Check if we can acquire semaphore (non-blocking)
-    if not processing_semaphore.acquire(blocking=False):
-        queue_position = len(user_queue) + 1
-        user_queue.append(user_id)
         
-        await update.message.reply_text(
-            f"⏳ Queue में आपका स्थान: {queue_position}\n\n"
-            f"🔄 अभी {MAX_CONCURRENT_USERS} users की videos process हो रही हैं।\n"
-            f"⏰ आपकी बारी आने पर processing शुरू होगी।\n\n"
-            f"कृपया थोड़ा इंतजार करें..."
-        )
-        
-        # Wait for turn
-        while user_id in user_queue and not processing_semaphore.acquire(blocking=False):
-            await asyncio.sleep(5)
-        
-        if user_id in user_queue:
-            user_queue.remove(user_id)
-    
-    # Add user to processing list
-    processing_users[user_id] = {
-        'video_id': video_id,
-        'start_time': time.time(),
-        'url': url
-    }
-    
-    try:
-        # Forward original URL message to channel
-        try:
-            await update.message.forward(chat_id=CHANNEL_USERNAME)
-            
-            # Additional info message for channel
-            channel_message = f"""
-🔗 नया YouTube Link Received!
-
-👤 Name: {user_name}
-🆔 User ID: {user_id}
-📝 Username: @{username}
-🎬 Video ID: {video_id}
-⏱️ Duration: {format_duration(duration_seconds)}
-🔗 URL: {url}
-⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
-            """
-            await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_message)
-        except Exception as e:
-            print(f"Channel message send error: {e}")
-        
-        # Start processing
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        
-        # Initial response
-        progress_msg = await update.message.reply_text(
-            f"🎬 Video Processing शुरू...\n\n"
-            f"📋 Video ID: {video_id}\n"
-            f"⏱️ Duration: {format_duration(duration_seconds)}\n"
-            f"📥 Downloading video..."
-        )
-        
-        # Download progress callback
-        async def update_progress(percent, speed):
-            try:
-                await progress_msg.edit_text(
-                    f"🎬 Video Processing...\n\n"
-                    f"📋 Video ID: {video_id}\n"
-                    f"⏱️ Duration: {format_duration(duration_seconds)}\n"
-                    f"📥 Download Progress: {percent}\n"
-                    f"🚀 Speed: {speed}"
-                )
-            except:
-                pass
-        
-        # Download video in thread to avoid blocking
-        loop = asyncio.get_event_loop()
-        
-        def download_wrapper():
-            return download_video(video_id, lambda p, s: asyncio.run_coroutine_threadsafe(update_progress(p, s), loop))
-        
-        with ThreadPoolExecutor() as executor:
-            future = loop.run_in_executor(executor, download_wrapper)
-            title, video_path, duration = await future
-        
-        # Update message after download
-        try:
-            await progress_msg.edit_text(
-                f"✅ Video Downloaded!\n\n"
-                f"🎬 Title: {title}\n"
-                f"⏱️ Duration: {format_duration(duration)}\n"
-                f"📂 File: {video_path}\n\n"
-                f"🔄 Starting frame extraction..."
-            )
-        except:
-            pass
-        
-        # Process video chunks
-        await process_video_chunks(
-            update, context, video_id, title, video_path, 
-            user_name, user_id, username, url, duration
-        )
-        
-    except Exception as e:
-        error_message = f"❌ Error: {str(e)}"
-        await update.message.reply_text(error_message)
-        print(f"Processing error for user {user_id}: {e}")
-        
-        # Send error to channel
-        try:
-            channel_error = f"""
-❌ Processing Error!
-
-👤 User: {user_name} (@{username})
-🆔 ID: {user_id}
-🎬 Video ID: {video_id}
-🔗 URL: {url}
-❌ Error: {str(e)}
-⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
-            """
-            await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_error)
-        except:
-            pass
-    
-    finally:
-        # Clean up and release resources
+        # Remove from processing
         if user_id in processing_users:
             del processing_users[user_id]
         
+        # Release semaphore
         processing_semaphore.release()
         
-        # Process next user in queue if any
-        if user_queue:
-            next_user = user_queue.pop(0)
-            # The next user's handler will automatically acquire the semaphore
+        # Process next in queue
+        await process_next_in_queue(context)
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """YouTube URL handle करता है"""
+    url = update.message.text.strip()
+    user_name = update.effective_user.first_name
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "No username"
+
+    # Video ID extract करना
+    video_id = get_video_id(url)
+    if not video_id:
+        await update.message.reply_text("❌ Invalid YouTube URL! Please send a valid YouTube link.")
+        return
+
+    # Check if user is already being processed
+    if user_id in processing_users:
+        await update.message.reply_text(
+            f"⚠️ {user_name}, आपकी एक video पहले से process हो रही है!\n"
+            f"कृपया current video complete होने का इंतज़ार करें।"
+        )
+        return
+
+    # Check video duration first
+    duration_seconds = get_video_duration(video_id)
+    max_duration_seconds = MAX_VIDEO_DURATION_HOURS * 3600
+
+    if duration_seconds > max_duration_seconds:
+        await update.message.reply_text(
+            f"❌ Video बहुत लंबी है!\n\n"
+            f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
+            f"📏 Maximum Allowed: {format_duration(max_duration_seconds)}\n\n"
+            f"कृपया {MAX_VIDEO_DURATION_HOURS} घंटे से कम की video भेजें।"
+        )
+        return
+
+    # Try to acquire semaphore (non-blocking)
+    if not processing_semaphore.acquire(blocking=False):
+        # Add to queue
+        queue_position = len(user_queue) + 1
+        user_queue.append({
+            'user_id': user_id,
+            'user_name': user_name,
+            'username': username,
+            'url': url,
+            'video_id': video_id,
+            'update': update,
+            'context': context,
+            'duration_seconds': duration_seconds
+        })
+        
+        await update.message.reply_text(
+            f"⏳ आपकी video queue में add हो गई है!\n\n"
+            f"📊 Queue Position: {queue_position}\n"
+            f"👥 Currently Processing: {MAX_CONCURRENT_USERS} users\n"
+            f"⏱️ Video Duration: {format_duration(duration_seconds)}\n\n"
+            f"कृपया अपनी बारी का इंतज़ार करें।"
+        )
+        return
+
+    # Process immediately
+    processing_users[user_id] = {
+        'start_time': time.time(),
+        'video_title': 'Processing...',
+        'user_name': user_name
+    }
+
+    try:
+        # Initial message
+        initial_msg = await update.message.reply_text(
+            f"🔄 Processing शुरू हो रही है...\n"
+            f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
+            f"📊 आप {len(processing_users)}/{MAX_CONCURRENT_USERS} processing slots में से एक का उपयोग कर रहे हैं"
+        )
+
+        # Download progress callback
+        async def update_progress(percent, speed):
+            try:
+                await initial_msg.edit_text(
+                    f"⬇️ Downloading Video...\n"
+                    f"📊 Progress: {percent}\n"
+                    f"🚀 Speed: {speed}\n"
+                    f"⏱️ Duration: {format_duration(duration_seconds)}"
+                )
+            except:
+                pass
+
+        # Download video in thread
+        def download_wrapper():
+            return download_video(video_id, lambda percent, speed: asyncio.create_task(update_progress(percent, speed)))
+
+        # Execute download in thread pool
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            title, video_path, actual_duration = await loop.run_in_executor(executor, download_wrapper)
+
+        # Update processing info
+        processing_users[user_id]['video_title'] = title
+
+        # Send to channel
+        try:
+            channel_msg = f"""
+🔥 नई Video Processing Start!
+
+👤 User: {user_name} (@{username})
+🆔 ID: {user_id}
+🎬 Title: {title}
+⏱️ Duration: {format_duration(actual_duration)}
+🔗 URL: {url}
+⏰ Start Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+            """
+            await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_msg)
+        except Exception as e:
+            print(f"Channel message error: {e}")
+
+        # Delete initial message
+        try:
+            await initial_msg.delete()
+        except:
+            pass
+
+        # Process video chunks
+        await process_video_chunks(update, context, video_id, title, video_path, 
+                                 user_name, user_id, username, url, actual_duration)
+
+    except Exception as e:
+        error_message = f"❌ Download Error: {str(e)}"
+        await update.message.reply_text(error_message)
+        print(f"Download error for {user_name}: {e}")
+        
+        # Cleanup on error
+        if user_id in processing_users:
+            del processing_users[user_id]
+        processing_semaphore.release()
+        await process_next_in_queue(context)
 
 async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle non-URL messages"""
     user_name = update.effective_user.first_name
-    
     await update.message.reply_text(
-        f"👋 {user_name}, मैं केवल YouTube links process करता हूं!\n\n"
-        f"🎬 कृपया YouTube video का link भेजें।\n\n"
-        f"Example:\n"
+        f"🚨 {user_name}, कृपया केवल YouTube link भेजें!\n\n"
+        f"📝 Example:\n"
         f"https://www.youtube.com/watch?v=VIDEO_ID\n"
         f"https://youtu.be/VIDEO_ID\n\n"
-        f"📞 Help के लिए: @LODHIJI27"
+        f"बाकी messages का reply नहीं दिया जाता।"
     )
-    
-    # Forward to channel for monitoring
-    try:
-        await update.message.forward(chat_id=CHANNEL_USERNAME)
-        
-        channel_message = f"""
-💬 Other Message Received
 
-👤 User: {user_name}
-🆔 ID: {update.effective_user.id}
-📝 Username: @{update.effective_user.username or 'No username'}
-💬 Message: {update.message.text[:100]}...
-⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
-        """
-        await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_message)
-    except Exception as e:
-        print(f"Channel forward error: {e}")
+async def process_next_in_queue(context):
+    """Queue से अगले user को process करता है"""
+    if user_queue and len(processing_users) < MAX_CONCURRENT_USERS:
+        next_user = user_queue.pop(0)
+        
+        # Update queue positions for remaining users
+        for i, user in enumerate(user_queue):
+            try:
+                await user['update'].message.reply_text(
+                    f"⏳ Queue Update!\n"
+                    f"📊 New Position: {i + 1}\n"
+                    f"👥 Currently Processing: {len(processing_users) + 1}/{MAX_CONCURRENT_USERS}"
+                )
+            except:
+                pass
+        
+        # Process the next user
+        await handle_url(next_user['update'], next_user['context'])
 
 def main():
     """Main function to run the bot"""
-    print("🚀 YouTube to PDF Bot Starting...")
-    print(f"📊 Max concurrent users: {MAX_CONCURRENT_USERS}")
-    print(f"⏱️ Chunk duration: {CHUNK_DURATION_MINUTES} minutes")
-    print(f"📺 Max video duration: {MAX_VIDEO_DURATION_HOURS} hours")
-    
-    # Create bot application
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    
-    # URL handler (YouTube links)
-    url_filter = filters.Regex(r'(youtube\.com|youtu\.be)')
-    application.add_handler(MessageHandler(url_filter, handle_url))
-    
-    # Other messages handler
-    application.add_handler(MessageHandler(filters.TEXT & ~url_filter, handle_other_messages))
-    
-    print("✅ Bot handlers registered")
-    print("🔄 Starting polling...")
-    
-    # Start the bot
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    try:
+        application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        
+        # Command handlers
+        application.add_handler(CommandHandler("start", start))
+        
+        # URL handler (for YouTube URLs)
+        url_handler = MessageHandler(
+            filters.TEXT & (filters.Regex(r'youtube\.com|youtu\.be') | filters.Regex(r'https?://')), 
+            handle_url
+        )
+        application.add_handler(url_handler)
+        
+        # Other messages handler
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_other_messages))
+        
+        print("🤖 Bot is starting...")
+        print(f"👥 Max concurrent users: {MAX_CONCURRENT_USERS}")
+        print(f"⏱️ Max video duration: {MAX_VIDEO_DURATION_HOURS} hours")
+        print(f"📦 Chunk duration: {CHUNK_DURATION_MINUTES} minutes")
+        
+        # Run the bot
+        application.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        print(f"❌ Bot startup error: {e}")
 
 if __name__ == '__main__':
     main()

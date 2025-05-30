@@ -14,19 +14,11 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Telegram Bot"
+args = "telegram_bot_workflow"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "telegram_bot_workflow"
-
-[[workflows.workflow]]
-name = "Telegram Bot"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python run.py"
+args = "Telegram Bot"
 
 [[workflows.workflow]]
 name = "telegram_bot_workflow"
@@ -35,6 +27,14 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pip install -r pyproject.toml && python run.py"
+
+[[workflows.workflow]]
+name = "Telegram Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python run.py"
 
 [deployment]
 run = ["sh", "-c", "python run.py"]
