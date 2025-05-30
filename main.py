@@ -18,6 +18,11 @@ from threading import Semaphore
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import uuid
+import logging
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Your Telegram Bot Token
 TELEGRAM_TOKEN = '7960013115:AAEocB5fZ6jxLZVIcWwMVd5bJd-oQNqdEfA'
@@ -46,9 +51,9 @@ ADMIN_MAX_VIDEO_DURATION_HOURS = 50 # Admin के लिए अधिकतम 
 OWNER_ID = 2141959380
 
 # Global tracking for concurrent processing
-processing_requests = {}  # {request_id: {user_id, video_id, start_time, title}}
+processing_requests = {}  # {request_id: {user_id, video_id, start_time, title, task}}
 user_request_counts = {}  # {user_id: count}
-request_queue = []
+thread_pool = ThreadPoolExecutor(max_workers=50)  # Thread pool for parallel processing
 
 def get_video_id(url):
     """YouTube URL से video ID extract करता है"""
@@ -90,11 +95,11 @@ def get_video_duration(video_id):
                 return duration
             return 0
         except Exception as e:
-            print(f"Duration check error for {video_id}: {e}")
+            logger.error(f"Duration check error for {video_id}: {e}")
             return 0
 
-def download_video(video_id, progress_callback=None):
-    """YouTube video download करता है with better control"""
+async def download_video_async(video_id, progress_callback=None):
+    """YouTube video download करता है with async support"""
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     output_file = f"video_{video_id}_{int(time.time())}.mp4"
     
@@ -103,43 +108,48 @@ def download_video(video_id, progress_callback=None):
             try:
                 percent = d.get('_percent_str', 'N/A').strip()
                 speed = d.get('_speed_str', 'N/A').strip()
-                if progress_callback:
-                    asyncio.create_task(progress_callback(percent, speed))
-            except:
-                pass
+                # Create task but don't await here
+                asyncio.create_task(progress_callback(percent, speed))
+            except Exception as e:
+                logger.error(f"Progress callback error: {e}")
     
-    ydl_opts = {
-        'format': 'best[height<=720]/best',
-        'outtmpl': output_file,
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'progress_hooks': [progress_hook],
-        'retries': 5,
-        'fragment_retries': 5,
-        'extractaudio': False,
-        'keepvideo': True,
-        'cookiefile': 'cookies.txt',
-    }
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(video_url, download=True)
-            title = info_dict.get('title', 'Unknown Title')
-            duration = info_dict.get('duration', 0)
-            
-            if not os.path.exists(output_file):
-                raise Exception("Video file download failed")
+    def download_sync():
+        ydl_opts = {
+            'format': 'best[height<=720]/best',
+            'outtmpl': output_file,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [progress_hook],
+            'retries': 5,
+            'fragment_retries': 5,
+            'extractaudio': False,
+            'keepvideo': True,
+            'cookiefile': 'cookies.txt',
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(video_url, download=True)
+                title = info_dict.get('title', 'Unknown Title')
+                duration = info_dict.get('duration', 0)
                 
-            return title, output_file, duration
-            
-    except Exception as e:
-        if os.path.exists(output_file):
-            try:
-                os.remove(output_file)
-            except:
-                pass
-        raise Exception(f"Download failed: {str(e)}")
+                if not os.path.exists(output_file):
+                    raise Exception("Video file download failed")
+                    
+                return title, output_file, duration
+                
+        except Exception as e:
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except:
+                    pass
+            raise Exception(f"Download failed: {str(e)}")
+    
+    # Run download in thread pool
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(thread_pool, download_sync)
 
 def extract_unique_frames_for_chunk(video_file, output_folder, start_time, end_time, chunk_num, n=3, ssim_threshold=0.8):
     """Video के specific chunk से unique frames extract करता है"""
@@ -262,14 +272,15 @@ def can_process_request(user_id):
     
     return True, "ok"
 
-def start_request(user_id, video_id, title="Processing..."):
+def start_request(user_id, video_id, title="Processing...", task=None):
     """Start tracking a new request"""
     request_id = str(uuid.uuid4())
     processing_requests[request_id] = {
         'user_id': user_id,
         'video_id': video_id,
         'start_time': time.time(),
-        'title': title
+        'title': title,
+        'task': task
     }
     
     if user_id not in user_request_counts:
@@ -282,6 +293,12 @@ def finish_request(request_id):
     """Finish tracking a request"""
     if request_id in processing_requests:
         user_id = processing_requests[request_id]['user_id']
+        
+        # Cancel task if it exists
+        task = processing_requests[request_id].get('task')
+        if task and not task.done():
+            task.cancel()
+        
         del processing_requests[request_id]
         
         if user_id in user_request_counts:
@@ -308,7 +325,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🚀 नई सुविधाएं:
 • आप एक साथ {MAX_REQUESTS_PER_USER} videos process कर सकते हैं
 • Multiple users एक साथ bot use कर सकते हैं
-• Parallel processing के लिए optimized
+• Real-time parallel processing
+• Instant responses और updates
 
 🚨 Bot को लिंक के अलावा कोई और मैसेज न करें 
 यह मैसेज Owner के पास नहीं जाता है
@@ -336,11 +354,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_message)
     except Exception as e:
-        print(f"Channel message send error: {e}")
+        logger.error(f"Channel message send error: {e}")
 
 async def process_video_chunks(update, context, video_id, title, video_path, user_name, user_id, username, url, duration_seconds, request_id):
     """Video को chunks में process करता है और हर chunk की PDF instantly भेजता है"""
-    messages_to_delete = []
     start_time = time.time()
     
     try:
@@ -351,12 +368,13 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
         if request_id in processing_requests:
             processing_requests[request_id]['title'] = title
         
+        # Send initial analysis
         analysis_msg = await update.message.reply_text(
             f"📊 Video Analysis:\n"
             f"🎬 Title: {title}\n"
             f"⏱️ कुल समय: {format_duration(duration_seconds)}\n"
             f"📦 कुल भाग: {total_chunks}\n"
-            f"🔄 Request ID: {request_id[:8]}...\n\n"
+            f"🆔 Request ID: {request_id[:8]}...\n\n"
             f"🔄 Processing शुरू हो रही है..."
         )
         
@@ -370,20 +388,20 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 
         with tempfile.TemporaryDirectory() as temp_folder:
             for chunk_num in range(total_chunks):
+                # Check if request is still active
+                if request_id not in processing_requests:
+                    break
+                    
                 start_time_chunk = chunk_num * chunk_duration_seconds
                 end_time_chunk = min((chunk_num + 1) * chunk_duration_seconds, duration_seconds)
                 
-                chunk_start_min = int(start_time_chunk // 60)
-                chunk_end_min = int(end_time_chunk // 60)
-                
-                # Better progress message
+                # Send processing update immediately
                 processing_msg = await update.message.reply_text(
                     f"🔄 Processing Part {chunk_num + 1}/{total_chunks}\n"
                     f"📍 Video portion: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}\n"
                     f"🆔 Request: {request_id[:8]}...\n"
                     f"⚙️ Extracting frames..."
                 )
-                messages_to_delete.append(processing_msg)
                 
                 # Forward processing update to channel
                 try:
@@ -391,17 +409,22 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 except:
                     pass
                 
-                # Frames extract करना
-                timestamps = extract_unique_frames_for_chunk(
-                    video_path, temp_folder, start_time_chunk, end_time_chunk, chunk_num, 
-                    n=FRAME_SKIP_FOR_SSIM_CHECK, ssim_threshold=SSIM_THRESHOLD
-                )
+                # Process chunk in thread pool to avoid blocking
+                def process_chunk():
+                    return extract_unique_frames_for_chunk(
+                        video_path, temp_folder, start_time_chunk, end_time_chunk, chunk_num, 
+                        n=FRAME_SKIP_FOR_SSIM_CHECK, ssim_threshold=SSIM_THRESHOLD
+                    )
+                
+                # Run frame extraction in thread
+                loop = asyncio.get_event_loop()
+                timestamps = await loop.run_in_executor(thread_pool, process_chunk)
                 
                 if not timestamps:
-                    await update.message.reply_text(f"⚠️ Part {chunk_num + 1}: कोई unique frames नहीं मिले")
+                    await processing_msg.edit_text(f"⚠️ Part {chunk_num + 1}: कोई unique frames नहीं मिले")
                     continue
                 
-                # PDF बनाना
+                # Update progress
                 try:
                     await processing_msg.edit_text(
                         f"🔄 Processing Part {chunk_num + 1}/{total_chunks}\n"
@@ -412,17 +435,20 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 except:
                     pass
                 
-                # Chunk का filename
+                # Create chunk filename
                 safe_title = sanitize_filename(title)[:50]
                 chunk_filename = f"{safe_title}_Part{chunk_num + 1}_of_{total_chunks}_{request_id[:8]}.pdf"
                 chunk_pdf_path = os.path.join(temp_folder, chunk_filename)
                 
-                # PDF convert करना
-                pages_in_chunk = convert_frames_to_pdf_chunk(temp_folder, chunk_pdf_path, timestamps, chunk_num)
+                # Convert to PDF in thread
+                def create_pdf():
+                    return convert_frames_to_pdf_chunk(temp_folder, chunk_pdf_path, timestamps, chunk_num)
+                
+                pages_in_chunk = await loop.run_in_executor(thread_pool, create_pdf)
                 total_pages_all += pages_in_chunk
                 
                 if pages_in_chunk > 0 and os.path.exists(chunk_pdf_path):
-                    # First send to channel, then to user
+                    # Prepare caption
                     chunk_caption = f"""
 ✅ Part {chunk_num + 1}/{total_chunks} Complete!
 
@@ -430,10 +456,9 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 📄 Pages: {pages_in_chunk}
 ⏱️ Time Range: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}
 🆔 Request: {request_id[:8]}...
-
                     """
                     
-                    # Send to channel FIRST
+                    # Send to channel FIRST (non-blocking)
                     try:
                         channel_update = f"""
 📤 PDF Part Ready!
@@ -446,20 +471,20 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 🆔 Request: {request_id[:8]}...
 🔗 URL: {url}
                         """
-                        await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_update)
+                        asyncio.create_task(context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_update))
                         
                         # Send PDF to channel
                         with open(chunk_pdf_path, 'rb') as pdf_file:
-                            await context.bot.send_document(
+                            asyncio.create_task(context.bot.send_document(
                                 chat_id=CHANNEL_USERNAME,
                                 document=pdf_file,
                                 filename=chunk_filename,
                                 caption=f"📤 {user_name} का Part {chunk_num + 1}/{total_chunks}"
-                            )
+                            ))
                     except Exception as e:
-                        print(f"Channel send error: {e}")
+                        logger.error(f"Channel send error: {e}")
                     
-                    # Now send to user
+                    # Send to user
                     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
                     
                     with open(chunk_pdf_path, 'rb') as pdf_file:
@@ -499,7 +524,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
         
         await update.message.reply_text(completion_msg)
         
-        # Send completion to channel
+        # Send completion to channel (non-blocking)
         try:
             channel_completion = f"""
 ✅ Complete Video Processing!
@@ -512,14 +537,14 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 🆔 Request: {request_id[:8]}...
 🔗 URL: {url}
             """
-            await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_completion)
+            asyncio.create_task(context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_completion))
         except:
             pass
 
     except Exception as e:
         error_msg = f"❌ Processing Error: {str(e)}"
         await update.message.reply_text(error_msg)
-        print(f"Processing error for {user_name}: {e}")
+        logger.error(f"Processing error for {user_name}: {e}")
 
     finally:
         # Cleanup
@@ -528,9 +553,6 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 os.remove(video_path)
         except:
             pass
-        
-        # Finish request tracking
-        finish_request(request_id)
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """YouTube URL handle करता है with parallel processing"""
@@ -538,6 +560,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     user_id = update.effective_user.id
     username = update.effective_user.username or "No username"
+
+    # Immediate response to user
+    await update.message.reply_text(
+        f"📥 {user_name}, आपका link receive हो गया!\n"
+        f"🔄 Processing शुरू हो रही है...\n"
+        f"⚡ Parallel processing enabled!"
+    )
 
     # Video ID extract करना
     video_id = get_video_id(url)
@@ -605,49 +634,50 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # Start request tracking
-    request_id = start_request(user_id, video_id)
-
-    try:
-        # Initial message
-        initial_msg = await update.message.reply_text(
-            f"🔄 Processing शुरू हो रही है...\n"
-            f"{user_status} Status: {user_name}\n"
-            f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
-            f"📊 Your Active Requests: {user_request_counts.get(user_id, 0)}/{MAX_REQUESTS_PER_USER}\n"
-            f"📊 Total Server Load: {len(processing_requests)}/{MAX_CONCURRENT_TOTAL_REQUESTS}\n"
-            f"🆔 Request ID: {request_id[:8]}..."
-        )
-
-        # Download progress callback
-        async def update_progress(percent, speed):
-            try:
-                await initial_msg.edit_text(
-                    f"⬇️ Downloading Video...\n"
-                    f"📊 Progress: {percent}\n"
-                    f"🚀 Speed: {speed}\n"
-                    f"⏱️ Duration: {format_duration(duration_seconds)}\n"
-                    f"🆔 Request: {request_id[:8]}..."
-                )
-            except:
-                pass
-
-        # Download video in thread
-        def download_wrapper():
-            return download_video(video_id, update_progress)
-
-        # Execute download in thread pool
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as executor:
-            title, video_path, actual_duration = await loop.run_in_executor(executor, download_wrapper)
-
-        # Update processing info
-        if request_id in processing_requests:
-            processing_requests[request_id]['title'] = title
-
-        # Send to channel
+    # Create processing task
+    async def process_video_task():
+        request_id = None
         try:
-            channel_msg = f"""
+            # Start request tracking
+            request_id = start_request(user_id, video_id)
+            
+            # Add task to request tracking
+            if request_id in processing_requests:
+                processing_requests[request_id]['task'] = asyncio.current_task()
+
+            # Initial status message
+            status_msg = await update.message.reply_text(
+                f"🔄 Processing शुरू हो रही है...\n"
+                f"{user_status} Status: {user_name}\n"
+                f"⏱️ Video Duration: {format_duration(duration_seconds)}\n"
+                f"📊 Your Active Requests: {user_request_counts.get(user_id, 0)}/{MAX_REQUESTS_PER_USER}\n"
+                f"📊 Total Server Load: {len(processing_requests)}/{MAX_CONCURRENT_TOTAL_REQUESTS}\n"
+                f"🆔 Request ID: {request_id[:8]}..."
+            )
+
+            # Download progress callback
+            async def update_progress(percent, speed):
+                try:
+                    await status_msg.edit_text(
+                        f"⬇️ Downloading Video...\n"
+                        f"📊 Progress: {percent}\n"
+                        f"🚀 Speed: {speed}\n"
+                        f"⏱️ Duration: {format_duration(duration_seconds)}\n"
+                        f"🆔 Request: {request_id[:8]}..."
+                    )
+                except:
+                    pass
+
+            # Download video
+            title, video_path, actual_duration = await download_video_async(video_id, update_progress)
+
+            # Update processing info
+            if request_id in processing_requests:
+                processing_requests[request_id]['title'] = title
+
+            # Send to channel (non-blocking)
+            try:
+                channel_msg = f"""
 🔥 नई Video Processing Start!
 
 👤 User: {user_name} (@{username})
@@ -658,28 +688,36 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔗 URL: {url}
 ⏰ Start Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
 📊 Server Load: {len(processing_requests)}/{MAX_CONCURRENT_TOTAL_REQUESTS}
-            """
-            await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_msg)
+                """
+                asyncio.create_task(context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_msg))
+            except Exception as e:
+                logger.error(f"Channel message error: {e}")
+
+            # Delete initial message
+            try:
+                await status_msg.delete()
+            except:
+                pass
+
+            # Process video chunks
+            await process_video_chunks(update, context, video_id, title, video_path, 
+                                     user_name, user_id, username, url, actual_duration, request_id)
+
         except Exception as e:
-            print(f"Channel message error: {e}")
-
-        # Delete initial message
-        try:
-            await initial_msg.delete()
-        except:
-            pass
-
-        # Process video chunks
-        await process_video_chunks(update, context, video_id, title, video_path, 
-                                 user_name, user_id, username, url, actual_duration, request_id)
-
-    except Exception as e:
-        error_message = f"❌ Download Error: {str(e)}"
-        await update.message.reply_text(error_message)
-        print(f"Download error for {user_name}: {e}")
+            error_message = f"❌ Download Error: {str(e)}"
+            await update.message.reply_text(error_message)
+            logger.error(f"Download error for {user_name}: {e}")
         
-        # Cleanup on error
-        finish_request(request_id)
+        finally:
+            # Cleanup on completion or error
+            if request_id:
+                finish_request(request_id)
+
+    # Start processing task (non-blocking)
+    task = asyncio.create_task(process_video_task())
+    
+    # Store task reference
+    # Note: Task will be tracked in processing_requests once request_id is created
 
 async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle non-URL messages"""
@@ -697,6 +735,7 @@ async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TY
         f"📊 Your Status:\n"
         f"• Active Requests: {user_requests}/{MAX_REQUESTS_PER_USER}\n"
         f"• Server Load: {len(processing_requests)}/{MAX_CONCURRENT_TOTAL_REQUESTS}\n\n"
+        f"⚡ Parallel processing active - आप एक साथ multiple videos भेज सकते हैं!\n\n"
         f"बाकी messages का reply नहीं दिया जाता।"
     )
 
@@ -723,6 +762,7 @@ def main():
         print(f"👤 Max requests per user: {MAX_REQUESTS_PER_USER}")
         print(f"⏱️ Max video duration: {MAX_VIDEO_DURATION_HOURS} hours")
         print(f"📦 Chunk duration: {CHUNK_DURATION_MINUTES} minutes")
+        print("⚡ Advanced parallel processing enabled!")
         
         # Run the bot
         application.run_polling(drop_pending_updates=True)
