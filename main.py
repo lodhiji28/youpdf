@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import uuid
 import logging
+import io
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -108,10 +109,15 @@ async def download_video_async(video_id, progress_callback=None):
             try:
                 percent = d.get('_percent_str', 'N/A').strip()
                 speed = d.get('_speed_str', 'N/A').strip()
-                # Create task but don't await here
-                asyncio.create_task(progress_callback(percent, speed))
+                # Schedule callback in event loop safely
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(progress_callback(percent, speed))
+                except:
+                    pass  # Ignore if no event loop
             except Exception as e:
-                logger.error(f"Progress callback error: {e}")
+                logger.debug(f"Progress callback error: {e}")
     
     def download_sync():
         ydl_opts = {
@@ -448,7 +454,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 total_pages_all += pages_in_chunk
                 
                 if pages_in_chunk > 0 and os.path.exists(chunk_pdf_path):
-                    # Prepare caption
+                    # Prepare caption for user
                     chunk_caption = f"""
 ✅ Part {chunk_num + 1}/{total_chunks} Complete!
 
@@ -458,8 +464,9 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 🆔 Request: {request_id[:8]}...
                     """
                     
-                    # Send to channel FIRST (non-blocking)
+                    # STEP 1: Send to CHANNEL FIRST (with proper file handling)
                     try:
+                        # Channel message first
                         channel_update = f"""
 📤 PDF Part Ready!
 
@@ -471,28 +478,58 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 🆔 Request: {request_id[:8]}...
 🔗 URL: {url}
                         """
-                        asyncio.create_task(context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_update))
+                        await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=channel_update)
                         
-                        # Send PDF to channel
+                        # Send PDF to channel (with proper file reading)
                         with open(chunk_pdf_path, 'rb') as pdf_file:
-                            asyncio.create_task(context.bot.send_document(
-                                chat_id=CHANNEL_USERNAME,
-                                document=pdf_file,
-                                filename=chunk_filename,
-                                caption=f"📤 {user_name} का Part {chunk_num + 1}/{total_chunks}"
-                            ))
+                            pdf_content = pdf_file.read()  # Read file content first
+                        
+                        # Send to channel using BytesIO to avoid file closing issues
+                        import io
+                        pdf_stream = io.BytesIO(pdf_content)
+                        pdf_stream.name = chunk_filename
+                        
+                        await context.bot.send_document(
+                            chat_id=CHANNEL_USERNAME,
+                            document=pdf_stream,
+                            filename=chunk_filename,
+                            caption=f"📤 {user_name} का Part {chunk_num + 1}/{total_chunks}"
+                        )
+                        
+                        logger.info(f"✅ PDF Part {chunk_num + 1} sent to channel successfully")
+                        
                     except Exception as e:
-                        logger.error(f"Channel send error: {e}")
+                        logger.error(f"❌ Channel send error: {e}")
                     
-                    # Send to user
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-                    
-                    with open(chunk_pdf_path, 'rb') as pdf_file:
+                    # STEP 2: Send to USER (after channel)
+                    try:
+                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+                        
+                        # Create new stream for user
+                        user_pdf_stream = io.BytesIO(pdf_content)
+                        user_pdf_stream.name = chunk_filename
+                        
                         await update.message.reply_document(
-                            document=pdf_file,
+                            document=user_pdf_stream,
                             filename=chunk_filename,
                             caption=chunk_caption
                         )
+                        
+                        logger.info(f"✅ PDF Part {chunk_num + 1} sent to user {user_name}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ User send error: {e}")
+                        # Try alternative method if first fails
+                        try:
+                            with open(chunk_pdf_path, 'rb') as pdf_file:
+                                await update.message.reply_document(
+                                    document=pdf_file,
+                                    filename=chunk_filename,
+                                    caption=chunk_caption
+                                )
+                        except Exception as e2:
+                            logger.error(f"❌ User send retry failed: {e2}")
+                            await update.message.reply_text(f"❌ Part {chunk_num + 1} sending failed. Please try again.")
                 
                 # Cleanup chunk frames
                 for frame_file in os.listdir(temp_folder):
@@ -665,8 +702,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"⏱️ Duration: {format_duration(duration_seconds)}\n"
                         f"🆔 Request: {request_id[:8]}..."
                     )
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Progress update error: {e}")
 
             # Download video
             title, video_path, actual_duration = await download_video_async(video_id, update_progress)
