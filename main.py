@@ -26,7 +26,7 @@ CHANNEL_USERNAME = '@alluserpdf'  # आपका channel username
 # SSIM के लिए सेटिंग्स
 SSIM_THRESHOLD = 1  # समानता का थ्रेशोल्ड
 SSIM_RESIZE_DIM = (128, 72) # SSIM तुलना के लिए फ्रेम का आकार
-FRAME_SKIP_FOR_SSIM_CHECK = 500 # हर 3rd फ्रेम पर SSIM जांच
+FRAME_SKIP_FOR_SSIM_CHECK = 250 # हर 3rd फ्रेम पर SSIM जांच
 
 # PDF के लिए सेटिंग्स
 PDF_FRAME_WIDTH_TARGET = 1280 # PDF में फ्रेम की चौड़ाई
@@ -74,21 +74,56 @@ def format_duration(seconds):
 def get_video_duration(video_id):
     """Video की duration निकालता है"""
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'cookiefile': 'cookies.txt',
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info_dict = ydl.extract_info(video_url, download=False)
-            if info_dict:
-                duration = info_dict.get('duration', 0)  # seconds में
-                return duration
-            return 0
-        except Exception as e:
-            print(f"Duration check error for {video_id}: {e}")
-            return 0
+    
+    # Try multiple configurations with different client types
+    configs = [
+        {
+            'quiet': True,
+            'no_warnings': True,
+            'format': 'worst',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            }
+        },
+        {
+            'quiet': True,
+            'no_warnings': True,
+            'format': 'worst',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                }
+            }
+        },
+        {
+            'quiet': True,
+            'no_warnings': True,
+            'cookiefile': 'cookies.txt',
+            'format': 'worst',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            }
+        }
+    ]
+    
+    for ydl_opts in configs:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info_dict = ydl.extract_info(video_url, download=False)
+                if info_dict:
+                    duration = info_dict.get('duration', 0)
+                    if duration > 0:
+                        return duration
+            except Exception as e:
+                print(f"Duration check attempt failed for {video_id}: {e}")
+                continue
+    
+    print(f"All duration check methods failed for {video_id}")
+    return 0
 
 def download_video(video_id, progress_callback=None):
     """YouTube video download करता है with better control"""
@@ -106,38 +141,86 @@ def download_video(video_id, progress_callback=None):
             except:
                 pass
     
-    ydl_opts = {
-        'format': 'best[height<=720]/best',
-        'outtmpl': output_file,
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'progress_hooks': [progress_hook],
-        'retries': 5,
-        'fragment_retries': 5,
-        'extractaudio': False,
-        'keepvideo': True,
-        'cookiefile': 'cookies.txt',
-    }
+    # Try different download configurations
+    configs = [
+        {
+            'format': 'best[height<=720]/best',
+            'outtmpl': output_file,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [progress_hook],
+            'retries': 3,
+            'fragment_retries': 3,
+            'extractaudio': False,
+            'keepvideo': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            }
+        },
+        {
+            'format': 'best[height<=720]/best',
+            'outtmpl': output_file,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [progress_hook],
+            'retries': 3,
+            'fragment_retries': 3,
+            'extractaudio': False,
+            'keepvideo': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                }
+            }
+        },
+        {
+            'format': 'best[height<=720]/best',
+            'outtmpl': output_file,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [progress_hook],
+            'retries': 2,
+            'fragment_retries': 2,
+            'extractaudio': False,
+            'keepvideo': True,
+            'cookiefile': 'cookies.txt',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            }
+        }
+    ]
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(video_url, download=True)
-            title = info_dict.get('title', 'Unknown Title')
-            duration = info_dict.get('duration', 0)
-            
-            if not os.path.exists(output_file):
-                raise Exception("Video file download failed")
+    for i, ydl_opts in enumerate(configs):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(video_url, download=True)
+                title = info_dict.get('title', 'Unknown Title')
+                duration = info_dict.get('duration', 0)
                 
-            return title, output_file, duration
+                if not os.path.exists(output_file):
+                    raise Exception("Video file download failed")
+                    
+                return title, output_file, duration
+                
+        except Exception as e:
+            print(f"Download attempt {i+1} failed for {video_id}: {e}")
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except:
+                    pass
             
-    except Exception as e:
-        if os.path.exists(output_file):
-            try:
-                os.remove(output_file)
-            except:
-                pass
-        raise Exception(f"Download failed: {str(e)}")
+            if i < len(configs) - 1:  # Not the last attempt
+                continue
+            else:  # Last attempt failed
+                raise Exception(f"All download methods failed: {str(e)}")
 
 def extract_unique_frames_for_chunk(video_file, output_folder, start_time, end_time, chunk_num, n=3, ssim_threshold=0.8):
     """Video के specific chunk से unique frames extract करता है"""
@@ -262,7 +345,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. YouTube video का link भेजें 
 2. Bot video को 30-30 मिनट के भागों में बांटेगा
 3. हर भाग की PDF बनकर तुरंत भेजी जाएगी
-4. एक साथ 10 users की videos process हो सकती हैं
 
 
 🚨 Bot को लिंक के अलावा कोई और मैसेज न करें 
@@ -377,9 +459,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 🎬 Title: {title}
 📄 Pages: {pages_in_chunk}
 ⏱️ Time Range: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}
-📦 Frames: {len(timestamps)}
 
-📞 Bot by @LODHIJI27
                     """
                     
                     # Send to channel FIRST
@@ -441,7 +521,7 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
 📦 Total Parts: {total_chunks}
 ⏱️ Processing Time: {format_duration(total_processing_time)}
 
-👨‍💻 Bot by @LODHIJI27
+📞 Contact Owner @LODHIJI27
         """
         
         await update.message.reply_text(completion_msg)
