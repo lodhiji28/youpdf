@@ -74,56 +74,21 @@ def format_duration(seconds):
 def get_video_duration(video_id):
     """Video की duration निकालता है"""
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    
-    # Try multiple configurations with different client types
-    configs = [
-        {
-            'quiet': True,
-            'no_warnings': True,
-            'format': 'worst',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android'],
-                }
-            }
-        },
-        {
-            'quiet': True,
-            'no_warnings': True,
-            'format': 'worst',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios'],
-                }
-            }
-        },
-        {
-            'quiet': True,
-            'no_warnings': True,
-            'cookiefile': 'cookies.txt',
-            'format': 'worst',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android'],
-                }
-            }
-        }
-    ]
-    
-    for ydl_opts in configs:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
-                info_dict = ydl.extract_info(video_url, download=False)
-                if info_dict:
-                    duration = info_dict.get('duration', 0)
-                    if duration > 0:
-                        return duration
-            except Exception as e:
-                print(f"Duration check attempt failed for {video_id}: {e}")
-                continue
-    
-    print(f"All duration check methods failed for {video_id}")
-    return 0
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'cookiefile': 'cookies.txt',
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info_dict = ydl.extract_info(video_url, download=False)
+            if info_dict:
+                duration = info_dict.get('duration', 0)  # seconds में
+                return duration
+            return 0
+        except Exception as e:
+            print(f"Duration check error for {video_id}: {e}")
+            return 0
 
 def download_video(video_id, progress_callback=None):
     """YouTube video download करता है with better control"""
@@ -141,86 +106,38 @@ def download_video(video_id, progress_callback=None):
             except:
                 pass
     
-    # Try different download configurations
-    configs = [
-        {
-            'format': 'best[height<=720]/best',
-            'outtmpl': output_file,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'progress_hooks': [progress_hook],
-            'retries': 3,
-            'fragment_retries': 3,
-            'extractaudio': False,
-            'keepvideo': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android'],
-                }
-            }
-        },
-        {
-            'format': 'best[height<=720]/best',
-            'outtmpl': output_file,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'progress_hooks': [progress_hook],
-            'retries': 3,
-            'fragment_retries': 3,
-            'extractaudio': False,
-            'keepvideo': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios'],
-                }
-            }
-        },
-        {
-            'format': 'best[height<=720]/best',
-            'outtmpl': output_file,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'progress_hooks': [progress_hook],
-            'retries': 2,
-            'fragment_retries': 2,
-            'extractaudio': False,
-            'keepvideo': True,
-            'cookiefile': 'cookies.txt',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android'],
-                }
-            }
-        }
-    ]
+    ydl_opts = {
+        'format': 'best[height<=720]/best',
+        'outtmpl': output_file,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'progress_hooks': [progress_hook],
+        'retries': 5,
+        'fragment_retries': 5,
+        'extractaudio': False,
+        'keepvideo': True,
+        'cookiefile': 'cookies.txt',
+    }
     
-    for i, ydl_opts in enumerate(configs):
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(video_url, download=True)
-                title = info_dict.get('title', 'Unknown Title')
-                duration = info_dict.get('duration', 0)
-                
-                if not os.path.exists(output_file):
-                    raise Exception("Video file download failed")
-                    
-                return title, output_file, duration
-                
-        except Exception as e:
-            print(f"Download attempt {i+1} failed for {video_id}: {e}")
-            if os.path.exists(output_file):
-                try:
-                    os.remove(output_file)
-                except:
-                    pass
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(video_url, download=True)
+            title = info_dict.get('title', 'Unknown Title')
+            duration = info_dict.get('duration', 0)
             
-            if i < len(configs) - 1:  # Not the last attempt
-                continue
-            else:  # Last attempt failed
-                raise Exception(f"All download methods failed: {str(e)}")
+            if not os.path.exists(output_file):
+                raise Exception("Video file download failed")
+                
+            return title, output_file, duration
+            
+    except Exception as e:
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+            except:
+                pass
+        raise Exception(f"Download failed: {str(e)}")
 
 def extract_unique_frames_for_chunk(video_file, output_folder, start_time, end_time, chunk_num, n=3, ssim_threshold=0.8):
     """Video के specific chunk से unique frames extract करता है"""
