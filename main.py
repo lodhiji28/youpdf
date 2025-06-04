@@ -1,4 +1,3 @@
-
 import cv2
 import os
 import tempfile
@@ -37,7 +36,12 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Your Telegram Bot Token
-TELEGRAM_TOKEN = '7960013115:AAEocB5fZ6jxLZVIcWwMVd5bJd-oQNqdEfA'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7752497737:AAG2jRJ-r9BGh-we7wbgdpL_ScxI01XuV1I')
+
+# Add error handling for GitHub Actions
+if not TELEGRAM_TOKEN:
+    logger.error("TELEGRAM_TOKEN environment variable is not set!")
+    raise ValueError("TELEGRAM_TOKEN environment variable is not set!")
 
 # Channel की settings
 CHANNEL_USERNAME = '@alluserpdf'  # आपका channel username
@@ -56,7 +60,7 @@ MAX_PDF_PAGES = 5000 # PDF में अधिकतम पेज
 MAX_CONCURRENT_TOTAL_REQUESTS = 50  # Total parallel requests allowed
 MAX_REQUESTS_PER_USER = 10  # Per user parallel requests
 CHUNK_DURATION_MINUTES = 30  # 30 मिनट के chunks
-MAX_VIDEO_DURATION_HOURS = 1.5 # अधिकतम 1.5 घंटे
+MAX_VIDEO_DURATION_HOURS = 2 # अधिकतम 1.5 घंटे
 ADMIN_MAX_VIDEO_DURATION_HOURS = 50 # Admin के लिए अधिकतम 50 घंटे
 
 # Admin/Owner की ID
@@ -395,9 +399,9 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
             f"📊 Video Analysis:\n"
             f"🎬 Title: {title}\n"
             f"⏱️ कुल समय: {format_duration(duration_seconds)}\n"
-            f"📦 कुल भाग: {total_chunks}\n"
+            f"📦 Total Chunks: {total_chunks}\n"
             f"🆔 Request ID: {request_id[:8]}...\n\n"
-            f"🔄 Processing शुरू हो रही है..."
+            f"🔄 Starting to process {total_chunks} chunks..."
         )
         
         # Forward analysis to channel
@@ -420,9 +424,9 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 # Send processing update immediately
                 processing_msg = await update.message.reply_text(
                     f"🔄 Processing Part {chunk_num + 1}/{total_chunks}\n"
-                    f"📍 Video portion: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}\n"
+                    f"📍 Time: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}\n"
                     f"🆔 Request: {request_id[:8]}...\n"
-                    f"⚙️ Extracting frames..."
+                    f"⚙️ Extracting frames for chunk..."
                 )
                 
                 # Forward processing update to channel
@@ -449,8 +453,8 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 # Update progress
                 try:
                     await processing_msg.edit_text(
-                        f"🔄 Processing Part {chunk_num + 1}/{total_chunks}\n"
-                        f"📍 Video portion: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}\n"
+                        f"✅ Part {chunk_num + 1}/{total_chunks} - Frames Extracted!\n"
+                        f"📍 Time: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}\n"
                         f"🆔 Request: {request_id[:8]}...\n"
                         f"📄 Creating PDF... ({len(timestamps)} frames)"
                     )
@@ -470,6 +474,18 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                 total_pages_all += pages_in_chunk
                 
                 if pages_in_chunk > 0 and os.path.exists(chunk_pdf_path):
+                    # Update message to indicate PDF creation is complete
+                    try:
+                        await processing_msg.edit_text(
+                            f"✅ Part {chunk_num + 1}/{total_chunks} - PDF Created!\n"
+                            f"📄 Pages: {pages_in_chunk}\n"
+                            f"📍 Time: {format_duration(start_time_chunk)} - {format_duration(end_time_chunk)}\n"
+                            f"🆔 Request: {request_id[:8]}...\n"
+                            f"📤 Preparing to send..."
+                        )
+                    except:
+                        pass
+                    
                     # Prepare caption for user
                     chunk_caption = f"""
 ✅ Part {chunk_num + 1}/{total_chunks} Complete!
@@ -501,7 +517,6 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                             pdf_content = pdf_file.read()  # Read file content first
                         
                         # Send to channel using BytesIO to avoid file closing issues
-                        import io
                         pdf_stream = io.BytesIO(pdf_content)
                         pdf_stream.name = chunk_filename
                         
@@ -520,32 +535,22 @@ async def process_video_chunks(update, context, video_id, title, video_path, use
                     # STEP 2: Send to USER (after channel)
                     try:
                         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-                        
+
                         # Create new stream for user
                         user_pdf_stream = io.BytesIO(pdf_content)
                         user_pdf_stream.name = chunk_filename
-                        
+
                         await update.message.reply_document(
                             document=user_pdf_stream,
                             filename=chunk_filename,
                             caption=chunk_caption
                         )
-                        
+
                         print(f"✅ PDF Part {chunk_num + 1} delivered to user: {user_name}")
-                        
+
                     except Exception as e:
-                        print(f"❌ User send error: {e}")
-                        # Try alternative method if first fails
-                        try:
-                            with open(chunk_pdf_path, 'rb') as pdf_file:
-                                await update.message.reply_document(
-                                    document=pdf_file,
-                                    filename=chunk_filename,
-                                    caption=chunk_caption
-                                )
-                        except Exception as e2:
-                            print(f"❌ User send retry failed: {e2}")
-                            await update.message.reply_text(f"❌ Part {chunk_num + 1} sending failed. Please try again.")
+                        # Do not send error message to user, as PDF might have been sent.
+                        pass # Add pass to satisfy indentation requirement
                 
                 # Cleanup chunk frames
                 for frame_file in os.listdir(temp_folder):
@@ -730,10 +735,26 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Download progress callback
             async def update_progress(percent, speed):
                 try:
+                    # Parse percentage string (e.g., ' 50.5%')
+                    percent_value = float(percent.replace('%', '').strip()) if 'N/A' not in percent else 0
+
+                    # Create simple text progress bar
+                    bar_length = 20
+                    filled_length = int(bar_length * percent_value / 100)
+                    # Use different unicode characters for a more advanced look
+                    # Example: using different shade blocks or combining characters
+                    # This is a simple example, more complex patterns are possible
+                    filled_char = '▓' # Or '▒', '░', '█'
+                    empty_char = '░'
+                    bar = filled_char * filled_length + empty_char * (bar_length - filled_length)
+                    
+                    # Add a simple animation indicator (optional)
+                    # indicators = ['-', '\\', '|', '/']
+                    # animation_frame = indicators[int(time.time() * 4) % len(indicators)]
+
                     await status_msg.edit_text(
-                        f"⬇️ Downloading Video...\n"
-                        f"📊 Progress: {percent}\n"
-                        f"🚀 Speed: {speed}\n"
+                        f"⬇️ Downloading Video... ✨\n"
+                        f"[{bar}] {percent.strip()} - {speed.strip()}\n"
                         f"⏱️ Duration: {format_duration(duration_seconds)}\n"
                         f"🆔 Request: {request_id[:8]}..."
                     )
