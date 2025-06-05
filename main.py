@@ -36,12 +36,8 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Your Telegram Bot Token
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7752497737:AAG2jRJ-r9BGh-we7wbgdpL_ScxI01XuV1I')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7752497737:AAGFqx485XiqjLYAzpFIiwd4PBywEjWmq6Y')
 
-# Add error handling for GitHub Actions
-if not TELEGRAM_TOKEN:
-    logger.error("TELEGRAM_TOKEN environment variable is not set!")
-    raise ValueError("TELEGRAM_TOKEN environment variable is not set!")
 
 # Channel की settings
 CHANNEL_USERNAME = '@alluserpdf'  # आपका channel username
