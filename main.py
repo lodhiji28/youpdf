@@ -19,6 +19,7 @@ import threading
 import uuid
 import logging
 import io
+import json
 
 # Logging setup - Clean console output
 logging.basicConfig(
@@ -36,7 +37,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Your Telegram Bot Token
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7752497737:AAGFqx485XiqjLYAzpFIiwd4PBywEjWmq6Y')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8126433125:AAGehKviNg7ojhMoTFQ64ActKYSFLls4Xm0')
 
 
 # Channel की settings
@@ -45,7 +46,7 @@ CHANNEL_USERNAME = '@alluserpdf'  # आपका channel username
 # SSIM के लिए सेटिंग्स
 SSIM_THRESHOLD = 1  # समानता का थ्रेशोल्ड
 SSIM_RESIZE_DIM = (128, 72) # SSIM तुलना के लिए फ्रेम का आकार
-FRAME_SKIP_FOR_SSIM_CHECK = 250 # हर 3rd फ्रेम पर SSIM जांच
+FRAME_SKIP_FOR_SSIM_CHECK = 400 # हर 400th फ्रेम पर SSIM जांच
 
 # PDF के लिए सेटिंग्स
 PDF_FRAME_WIDTH_TARGET = 1280 # PDF में फ्रेम की चौड़ाई
@@ -66,6 +67,53 @@ OWNER_ID = 2141959380
 processing_requests = {}  # {request_id: {user_id, video_id, start_time, title, task}}
 user_request_counts = {}  # {user_id: count}
 thread_pool = ThreadPoolExecutor(max_workers=50)  # Thread pool for parallel processing
+
+USERS_DB_PATH = 'users.json'
+
+def load_users():
+    if not os.path.exists(USERS_DB_PATH):
+        return []
+    with open(USERS_DB_PATH, 'r', encoding='utf-8') as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return []
+
+def save_users(users):
+    with open(USERS_DB_PATH, 'w', encoding='utf-8') as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def add_user(user_id, username, real_name):
+    users = load_users()
+    if not any(u['user_id'] == user_id for u in users):
+        users.append({
+            'user_id': user_id,
+            'username': username,
+            'real_name': real_name
+        })
+        save_users(users)
+
+def is_admin(user_id):
+    return user_id == OWNER_ID
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text('❌ Only admin can use this command.')
+        return
+    if not context.args:
+        await update.message.reply_text('Usage: /broadcast <message>')
+        return
+    message = ' '.join(context.args)
+    users = load_users()
+    count = 0
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user['user_id'], text=message)
+            count += 1
+        except Exception as e:
+            pass  # Ignore failures (user blocked bot, etc.)
+    await update.message.reply_text(f'✅ Broadcast sent to {count} users.')
 
 def get_video_id(url):
     """YouTube URL से video ID extract करता है"""
@@ -190,7 +238,7 @@ def extract_unique_frames_for_chunk(video_file, output_folder, start_time, end_t
             break
 
         if (frame_number - start_frame) % n == 0:
-            frame = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_CUBIC)
+            frame = cv2.resize(frame, (640 , 360), interpolation=cv2.INTER_CUBIC)
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_frame = cv2.resize(gray_frame, (128, 72))
 
@@ -309,10 +357,10 @@ def start_request(user_id, video_id, title="Processing...", task=None):
 def finish_request(request_id):
     """Finish tracking a request"""
     if request_id in processing_requests:
-        user_id = processing_requests[request_id]['user_id']
+        user_id = processing_requests(request_id)['user_id']
         
         # Cancel task if it exists
-        task = processing_requests[request_id].get('task')
+        task = processing_requests(request_id).get('task')
         if task and not task.done():
             task.cancel()
         
@@ -328,6 +376,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     user_id = update.effective_user.id
     username = update.effective_user.username or "No username"
+
+    # Save user to database
+    add_user(user_id, username, user_name)
 
     welcome_message = f"""
 👋 नमस्ते {user_name}!
@@ -615,6 +666,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "No username"
 
+    # Save user to database
+    add_user(user_id, username, user_name)
+
     # STEP 1: Forward original URL message to channel IMMEDIATELY
     try:
         await update.message.forward(chat_id=CHANNEL_USERNAME)
@@ -686,6 +740,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• URL गलत हो सकता है\n"
             f"• Network issue हो सकता है\n\n"
             f"कृपया valid YouTube URL भेजें।"
+            f"server issue hai abhi baad me aana okk? 😅"
         )
         return
 
@@ -814,7 +869,10 @@ async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     username = update.effective_user.username or "No username"
     message_text = update.message.text or "No text"
-    
+
+    # Save user to database
+    add_user(user_id, username, user_name)
+
     # STEP 1: Forward original message to channel FIRST
     try:
         await update.message.forward(chat_id=CHANNEL_USERNAME)
@@ -849,6 +907,27 @@ async def handle_other_messages(update: Update, context: ContextTypes.DEFAULT_TY
         f"बाकी messages का reply नहीं दिया जाता।"
     )
 
+async def usercount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show total number of unique users"""
+    users = load_users()
+    count = len(users)
+    await update.message.reply_text(f"👥 Total unique users: {count}")
+
+async def sendexcel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text('❌ Only admin can use this command.')
+        return
+    try:
+        with open('users.xlsx', 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename='users.xlsx',
+                caption='👤 All users Excel file (admin only)'
+            )
+    except Exception as e:
+        await update.message.reply_text(f'❌ Error sending file: {e}')
+
 def main():
     """Main function to run the bot"""
     try:
@@ -869,7 +948,9 @@ def main():
         
         # Command handlers
         application.add_handler(CommandHandler("start", start))
-        
+        application.add_handler(CommandHandler("broadcast", broadcast))
+        application.add_handler(CommandHandler("usercount", usercount))
+        application.add_handler(CommandHandler("sendexcel", sendexcel))
         # URL handler (for YouTube URLs)
         url_handler = MessageHandler(
             filters.TEXT & (filters.Regex(r'youtube\.com|youtu\.be') | filters.Regex(r'https?://')), 
